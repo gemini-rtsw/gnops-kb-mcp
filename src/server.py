@@ -48,12 +48,18 @@ def build_instructions() -> str:
     )
     return (
         "gnops-kb holds the Gemini RTSW team's shared notes.\n"
-        "Before working on one of these systems, call get_briefing(system) once and treat it as "
-        "background you already know. Use search_notes for details not in the briefing.\n"
+        "Before working on one of these systems, call get_briefing(system) once. Treat it as a "
+        "well-informed colleague's notes, not as current truth. Use search_notes and get_note for "
+        "details not in the briefing. Before you repeat a fact the user will act on (fault status, "
+        "current config, live values), check it at the source the note names (Jira, logs, PVs, "
+        "the repo); if the source disagrees, say so and propose a note update. When you answer, "
+        "keep apart what you checked from what you only read in the notes.\n"
         f"{rows or '- (no briefings yet)'}\n"
         "When the user asks to distill, save or share what this session learned, call "
         "get_note(\"DISTILL.md\") and follow it; for their past sessions, get_note(\"DISTILL_ALL.md\"). "
-        "Changes go through submit_notes and are reviewed before anyone sees them.\n\n"
+        "Changes go through submit_notes and are reviewed before anyone sees them. When this "
+        "session learned something that took real digging, or showed a note to be wrong, offer "
+        "to distill before finishing.\n\n"
         f"{team}"
     ).strip()
 
@@ -112,6 +118,14 @@ class Change(BaseModel):
 async def submit_notes(title: str, summary: str, author: str, changes: list[Change]) -> dict:
     """Propose new or updated notes. They become a pull request for review; nothing is published directly.
 
+    Follow DISTILL.md (get_note("DISTILL.md")). Write for a new session that has to work
+    at expert level with no history: for conclusions and facts someone will act on, give
+    the date, the source (GNFR key, PV, log query, file:line, person), the confidence
+    (seen in data / inferred / reported by someone / guess), the reasoning, and the
+    command that re-checks it. For open faults also give suspects, what's ruled out and
+    why, the next step and its owner, and changes made with before and after values.
+    Keep the briefing short (current state plus pointers); put the detail in notes/.
+
     Each change is the complete new content of one file. Read the current file
     first (get_briefing / get_note) and merge into it rather than replacing it.
     author is the person whose session this came from (name or email).
@@ -127,8 +141,8 @@ async def submit_notes(title: str, summary: str, author: str, changes: list[Chan
 @mcp.prompt()
 def brief(system: str) -> str:
     """Load a system's briefing into this session."""
-    return (f"Here is the team briefing for {system}. Treat it as background you already know; "
-            f"reply only with a one-line acknowledgement.\n\n{_briefing(system)}")
+    return (f"Here is the team briefing for {system}. Treat it as a well-informed colleague's notes, "
+            f"not as current truth: check facts the user will act on at their source. Reply only with a one-line acknowledgement.\n\n{_briefing(system)}")
 
 
 @mcp.prompt()

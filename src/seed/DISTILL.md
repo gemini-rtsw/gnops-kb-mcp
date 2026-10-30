@@ -10,8 +10,9 @@ to rediscover it, write it down.
 
 Test before submitting: for each system, could a new session, with only these
 notes, (a) answer "how does X work and where is it?", (b) build, deploy and
-roll back, (c) fix the last three problems this session saw? If not, add
-what is missing.
+roll back, (c) fix the last three problems this session saw, (d) tell which
+facts were measured and which were inferred, and re-check the important ones?
+If not, add what is missing.
 
 ## Steps
 
@@ -54,7 +55,9 @@ folders: <local folder names that mean this system, comma separated>
 
 ### notes/<system>/<topic>.md: the depth (no length limit)
 
-Write as many as the system needs, one topic each. Aim to cover:
+Write as many as the system needs, one topic each. The names below are
+suggestions: you know the system best, so choose the names and structure that
+fit it, as long as the briefing's Notes index lists every note. Aim to cover:
 
 - **architecture.md**: components, processes, hosts, network paths and ports,
   data flow from input to output, how the parts talk (CA, sockets, files,
@@ -79,6 +82,22 @@ Write as many as the system needs, one topic each. Aim to cover:
   commits, PRs, tickets (Jira/GNFR) and who decided what.
 - **reference-<topic>.md**: tables, pinouts, register maps, version matrices,
   links to external docs and Confluence pages, glossary of the system's terms.
+- **people.md** (or a section in the briefing): who owns, maintains, reports
+  on and decides about the system, and what each person knows.
+- **faults/GNFR-xxxxx.md**: one per open or significant fault, for example:
+  ```
+  # GNFR-xxxxx: <title>
+  Status: <Jira status> (checked against Jira YYYY-MM-DD)
+  Re-check: <tool call or command that shows the current status>
+  ## Symptom      (when, what was seen, impact)
+  ## Evidence     (each item: what, source, date, confidence)
+  ## Reasoning    (how the evidence leads to the current conclusion)
+  ## Suspects     (still open)
+  ## Ruled out    (each with why)
+  ## Changes made (what, when, who, before -> after values)
+  ## Next step    (what, who owns it, what it's waiting on)
+  ## Loose ends   (gaps, unexplained data, unanswered Jira comments)
+  ```
 
 Skip a topic only if it truly doesn't apply.
 
@@ -92,5 +111,12 @@ Skip a topic only if it truly doesn't apply.
 - Keep failed approaches when the lesson is "don't do X because Y".
 - Absolute dates (YYYY-MM-DD). Mark facts that may go stale with
   "(as of YYYY-MM-DD)" and unverified ones with "(unverified)".
+- Provenance for conclusions and for facts someone will act on (fault status,
+  current config, live values, causes): the date, the source (GNFR key, PV,
+  log query, file:line, person), the confidence (seen in data / inferred /
+  reported by <person> / guess), the reasoning that leads from evidence to
+  conclusion, and the exact command or tool call that re-checks it. Don't
+  tag every line; plain reference facts (paths, file layout) don't need it.
+- Name the people involved and their roles.
 - Never include passwords, tokens or keys; say where they are stored.
 - Leave out chat and anything about people's moods.
