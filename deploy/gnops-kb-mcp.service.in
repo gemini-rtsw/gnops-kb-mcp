@@ -1,0 +1,35 @@
+[Unit]
+Description=gnops-kb-mcp MCP server (team notes for Claude sessions)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+
+# @IMAGE@ is replaced at build time with the exact image this RPM was built with.
+Environment=IMAGE=@IMAGE@
+
+# Pull as `software`, never root (root has no GHCR credentials on production
+# hosts), and only when the image is missing: the tag is pinned, so once it is
+# here there is nothing new to fetch. Without `software` (dev), a missing image
+# fails with the exact `docker pull` to run; Restart=always then starts it.
+ExecStartPre=/bin/sh -c 'docker image inspect "$IMAGE" >/dev/null 2>&1 || runuser -u software -- docker pull "$IMAGE" || { echo "Image $IMAGE is not on this host. As a docker-group user run: docker pull $IMAGE" >&2; exit 1; }'
+ExecStartPre=-/usr/bin/docker rm -f gnops-kb-mcp
+
+# Foreground `docker run --rm`: systemd owns the lifecycle.
+# /var/lib/gnops-kb-mcp holds the notes checkout (owned by nobody, from the RPM).
+ExecStart=/usr/bin/docker run --rm --name gnops-kb-mcp \
+  --network host \
+  --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges \
+  -v /var/lib/gnops-kb-mcp:/data:Z \
+  --env-file /etc/sysconfig/gnops-kb-mcp \
+  ${IMAGE}
+
+ExecStop=/usr/bin/docker stop -t 10 gnops-kb-mcp
+
+[Install]
+WantedBy=multi-user.target

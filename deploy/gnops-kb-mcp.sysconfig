@@ -1,0 +1,20 @@
+# Host-specific settings, passed to the container as environment variables.
+# Kept across upgrades (%config(noreplace)). Restart after editing:
+#   systemctl restart gnops-kb-mcp
+
+# MCP endpoint: http://<this host>:MCP_PORT/mcp
+MCP_PORT=8002
+# Extra host names clients may use (space separated), e.g. a DNS alias.
+# The host's own name and FQDN are always allowed.
+MCP_ALLOWED_HOSTS=
+
+# The notes repo (private). Empty: a local-only repo in /var/lib/gnops-kb-mcp/notes, started
+# from the built-in seed; proposals become local branches there.
+# Changing it later: stop the service and remove /var/lib/gnops-kb-mcp/notes.
+NOTES_REMOTE=https://github.com/gemini-rtsw/gnops-kb-notes.git
+NOTES_BRANCH=main
+# Fine-grained token for NOTES_REMOTE only: Contents read/write, Pull requests
+# read/write. Used to fetch, push proposal branches and open pull requests.
+GITHUB_TOKEN=
+# How often to pick up merged changes, in seconds.
+REFRESH_SECONDS=300
