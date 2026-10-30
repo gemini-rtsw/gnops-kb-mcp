@@ -51,8 +51,9 @@ def build_instructions() -> str:
         "Before working on one of these systems, call get_briefing(system) once and treat it as "
         "background you already know. Use search_notes for details not in the briefing.\n"
         f"{rows or '- (no briefings yet)'}\n"
-        "When the user asks to distill or save what was learned, use the distill prompt's steps "
-        "and submit_notes; changes are reviewed before anyone sees them.\n\n"
+        "When the user asks to distill, save or share what this session learned, call "
+        "get_note(\"DISTILL.md\") and follow it; for their past sessions, get_note(\"DISTILL_ALL.md\"). "
+        "Changes go through submit_notes and are reviewed before anyone sees them.\n\n"
         f"{team}"
     ).strip()
 
