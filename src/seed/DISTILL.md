@@ -55,6 +55,20 @@ folders: <local folder names that mean this system, comma separated>
 
 ### notes/<system>/<topic>.md: the depth (no length limit)
 
+Every note (and every core/ file) starts with a header. Sessions don't load
+notes up front: they see each note's title and description in the core's
+index and decide from that whether to open it, so the description says what
+the note answers, in words someone would search for:
+
+```
+---
+title: <topic, e.g. "ag: PMAC reference">
+description: <one line: what questions this note answers>
+---
+```
+
+submit_notes rejects a core/ or notes/ file without both lines.
+
 Write as many as the system needs, one topic each. The names below are
 suggestions: you know the system best, so choose the names and structure that
 fit it, as long as the briefing's Notes index lists every note. Aim to cover:
@@ -100,6 +114,15 @@ fit it, as long as the briefing's Notes index lists every note. Aim to cover:
   ```
 
 Skip a topic only if it truly doesn't apply.
+
+### core/<topic>.md: general knowledge (every session reads it)
+
+Knowledge that is not about one system: a pattern used across many systems
+(migrating a production package, porting an EPICS 3.14 IOC to EPICS 7), how
+the team works, how to reach a class of hosts. Every session reads all of
+core/ before it starts, so put something here when a session working on a
+system with no briefing would still need it. Keep each file tight, link to
+the system notes for worked examples, and use the same header as a note.
 
 ## Rules
 

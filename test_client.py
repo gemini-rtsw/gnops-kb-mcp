@@ -56,10 +56,15 @@ async def main(url: str):
                 part += 1
             await call(s, "list_briefings", {})
             await call(s, "search_notes", {"query": "co-authored"})
+            await call(s, "search_notes", {"query": "epics-base pin el8"})
+            await call(s, "list_notes", {"system": "vme-iocs"})
             await call(s, "get_note", {"path": "TEAM.md"})
             await call(s, "submit_notes", {
                 "title": "Test proposal", "summary": "from test_client.py", "author": "test",
                 "changes": [{"path": "briefings/kbtest.md", "content": BRIEFING}]})
+            await call(s, "submit_notes", {
+                "title": "Must be rejected", "summary": "header check", "author": "test",
+                "changes": [{"path": "notes/kbtest/y.md", "content": "# No header\n"}]})
             await call(s, "submit_notes", {
                 "title": "Must be rejected", "summary": "secret check", "author": "test",
                 "changes": [{"path": "notes/kbtest/x.md", "content": "db password = hunter22\n"}]})
