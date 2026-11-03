@@ -1,4 +1,4 @@
-"""Smoke-test a running gnops-kb server: instructions, tools, prompts, a proposal.
+"""Smoke-test a running gnops-kb server: instructions, the core gate, tools, prompts, a proposal.
 
   python test_client.py http://HOST:8002/mcp
 
@@ -44,6 +44,16 @@ async def main(url: str):
             print("instructions:\n" + (init.instructions or "")[:600] + "\n")
             print("tools:  ", [t.name for t in (await s.list_tools()).tools])
             print("prompts:", [p.name for p in (await s.list_prompts()).prompts])
+            await call(s, "list_briefings", {})   # refused: the core comes first
+            part = 1
+            while True:
+                text = await call(s, "get_core", {"part": part})
+                print(f"  part {part}: {len(text)} chars, ends: {text[-120:]!r}")
+                if "core is complete" in text:
+                    break
+                if f"get_core(part={part + 1})" not in text:
+                    sys.exit("core did not lead to the next part")
+                part += 1
             await call(s, "list_briefings", {})
             await call(s, "search_notes", {"query": "co-authored"})
             await call(s, "get_note", {"path": "TEAM.md"})

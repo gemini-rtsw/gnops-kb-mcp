@@ -1,15 +1,21 @@
 """gnops-kb: the team's shared knowledge for Claude sessions, served over MCP.
 
 Every session that connects gets:
-  instructions   TEAM.md plus a list of briefings and when to load them
-                 (rebuilt after each refresh, so edits reach everyone)
-  tools          list_briefings, get_briefing, search_notes, get_note,
+  instructions   a short, mandatory order to read the core first, and the
+                 list of systems (rebuilt after each refresh, so edits reach
+                 everyone). Claude Code truncates instructions at about 4k
+                 characters, so the order comes first and the rest stays short.
+  tools          get_core(part) - the core: TEAM.md, core/*.md, every briefing
+                 and an index of every note, in parts that fit one tool result;
+                 list_briefings, get_briefing, search_notes, get_note,
                  submit_notes (proposes changes as a pull request; never
-                 edits the served notes)
+                 edits the served notes). Until a session has read every part
+                 of the core, the other tools refuse and say which part is next.
   prompts        brief(system), distill, distill_all
 
 Plain HTTP, for a SessionStart hook:
-  GET /start?cwd=<dir>   the briefing for that folder (204 when none matches)
+  GET /start?cwd=<dir>   the order to read the core, plus the briefing for that
+                         folder when one matches
   GET /health
 
 Run:
@@ -26,7 +32,7 @@ import socket
 import threading
 import time
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
@@ -36,36 +42,107 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 import notes
 
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", "300"))
+# The SDK drops an idle HTTP session after 30 minutes, and a reconnect would make
+# the session read the core again. Claude sessions sit idle for hours.
+SESSION_IDLE_SECONDS = float(os.environ.get("SESSION_IDLE_HOURS", "24")) * 3600
 
 mcp = MCPServer("gnops-kb")
 
 
-def build_instructions() -> str:
-    team = notes.read("TEAM.md") or ""
-    rows = "\n".join(
-        f"- {b['system']}: {b['description']} (folders: {', '.join(b['folders']) or b['system']})"
-        for b in notes.briefings()
-    )
+def core_order() -> str:
+    parts = notes.core_parts()
+    size = sum(len(p) for p in parts) // 4000 + 1
     return (
-        "gnops-kb holds the Gemini RTSW team's shared notes.\n"
-        "Before working on one of these systems, call get_briefing(system) once. Treat it as a "
-        "well-informed colleague's notes, not as current truth. Use search_notes and get_note for "
-        "details not in the briefing. Before you repeat a fact the user will act on (fault status, "
-        "current config, live values), check it at the source the note names (Jira, logs, PVs, "
-        "the repo); if the source disagrees, say so and propose a note update. When you answer, "
-        "keep apart what you checked from what you only read in the notes.\n"
-        f"{rows or '- (no briefings yet)'}\n"
+        f"MANDATORY, before your first reply and before any other tool call: call gnops-kb "
+        f"get_core(part=1), then get_core(part=2) and so on until it says the core is complete "
+        f"({len(parts)} parts, about {size}k tokens). Do this in every session, even when the task "
+        "looks small or unrelated: the core is the team's working agreement (what you may and may "
+        "not do on production, and how the user works with you) and the knowledge you need to work "
+        "at expert level. The other gnops-kb tools refuse until you have read it. After your context "
+        "is compacted or cleared, read it again."
+    )
+
+
+def build_instructions() -> str:
+    systems = ", ".join(b["system"] for b in notes.briefings()) or "none yet"
+    return (
+        f"{core_order()}\n\n"
+        "gnops-kb holds the Gemini RTSW team's shared knowledge. Treat it as a well-informed "
+        "colleague's notes, not as current truth: before you repeat a fact the user will act on "
+        "(fault status, current config, live values), check it at the source the note names (Jira, "
+        "logs, PVs, the repo, the build); if the source disagrees, say so and propose a note update. "
+        "Keep apart what you checked from what you only read.\n"
+        f"Systems with a briefing (all included in the core): {systems}.\n"
+        "After the core: get_note(path) for the detailed notes it indexes, search_notes for words.\n"
         "When the user asks to distill, save or share what this session learned, call "
         "get_note(\"DISTILL.md\") and follow it; for their past sessions, get_note(\"DISTILL_ALL.md\"). "
         "Changes go through submit_notes and are reviewed before anyone sees them. When this "
         "session learned something that took real digging, or showed a note to be wrong, offer "
-        "to distill before finishing.\n\n"
-        f"{team}"
+        "to distill before finishing."
     ).strip()
 
 
 def reload() -> None:
     mcp._lowlevel_server.instructions = build_instructions()
+
+
+# Parts of the core each session has read: {session key: (parts, last seen)}.
+# A new session (reconnect, new chat) reads it again.
+_core_read: dict[str, tuple[set[int], float]] = {}
+_core_lock = threading.Lock()
+DONE = 0   # in a session's set once it has read every part
+
+
+def _session_key(ctx: Context) -> str:
+    """The Mcp-Session-Id over HTTP (the SDK hands each request a new session object); stdio has one session."""
+    return (ctx.headers or {}).get("mcp-session-id") or "stdio"
+
+
+def _seen(ctx: Context) -> set[int]:
+    now = time.time()
+    with _core_lock:
+        for k in [k for k, (_, t) in _core_read.items() if now - t > SESSION_IDLE_SECONDS]:
+            del _core_read[k]
+        parts, _ = _core_read.get(_session_key(ctx), (set(), now))
+        _core_read[_session_key(ctx)] = (parts, now)
+        return parts
+
+
+def _require_core(ctx: Context) -> None:
+    seen = _seen(ctx)
+    if DONE in seen:   # a refresh may change the part count later; finished stays finished
+        return
+    n = len(notes.core_parts())
+    nxt = next((i for i in range(1, n + 1) if i not in seen), n)
+    raise ToolError(
+        f"Read the team core first: call get_core(part={nxt}) and continue through part {n}. "
+        "It holds the working agreement and the knowledge this tool's answers depend on."
+    )
+
+
+@mcp.tool()
+def get_core(ctx: Context, part: int = 1) -> str:
+    """MANDATORY first call in every session: the team's core knowledge, in parts.
+
+    Start with part=1 and call each next part until the result says the core is complete.
+    Holds the working agreement (TEAM.md), general cross-system knowledge (core/), every
+    system briefing in full, and an index of every detailed note. The other tools refuse
+    until every part has been read.
+    """
+    parts = notes.core_parts()
+    n = len(parts)
+    if not 1 <= part <= n:
+        raise ToolError(f"part must be 1-{n}")
+    seen = _seen(ctx)
+    seen.add(part)
+    missing = [i for i in range(1, n + 1) if i not in seen]
+    if not missing:
+        seen.add(DONE)
+        tail = ("The core is complete. Follow the working agreement for the rest of this session. "
+                "Use get_note(path) for any note in the index that bears on the task.")
+    else:
+        tail = f"Not complete yet: call get_core(part={missing[0]}) now."
+    return f"[gnops-kb core, part {part} of {n}]\n\n{parts[part - 1]}\n\n[{tail}]"
 
 
 def _briefing(system: str) -> str:
@@ -77,32 +154,36 @@ def _briefing(system: str) -> str:
 
 
 @mcp.tool()
-def list_briefings() -> list[dict]:
+def list_briefings(ctx: Context) -> list[dict]:
     """List the systems that have a briefing, with the folders each one covers."""
+    _require_core(ctx)
     return notes.briefings()
 
 
 @mcp.tool()
-def get_briefing(system: str) -> str:
+def get_briefing(ctx: Context, system: str) -> str:
     """The full briefing for one system (e.g. "ted"): state, hosts, procedures, gotchas, open work.
 
-    Load it once at the start of work on that system.
+    The core already includes every briefing; use this to re-read one later in a long session.
     """
+    _require_core(ctx)
     return _briefing(system)
 
 
 @mcp.tool()
-def search_notes(query: str, limit: int = 10) -> list[dict]:
+def search_notes(ctx: Context, query: str, limit: int = 10) -> list[dict]:
     """Search all briefings and notes for words; returns paths and the matching lines.
 
     Follow up with get_note(path) to read a whole note.
     """
+    _require_core(ctx)
     return notes.search(query, max(1, min(limit, 50)))
 
 
 @mcp.tool()
-def get_note(path: str) -> str:
+def get_note(ctx: Context, path: str) -> str:
     """Read one file from the notes repo by path, e.g. "notes/ted/grafana.md"."""
+    _require_core(ctx)
     text = notes.read(path)
     if text is None:
         raise ToolError(f"no such note: {path}")
@@ -110,12 +191,13 @@ def get_note(path: str) -> str:
 
 
 class Change(BaseModel):
-    path: str = Field(description='"briefings/<system>.md" or "notes/<system>/<name>.md", lowercase')
+    path: str = Field(description='"core/<name>.md" (general, cross-system), "briefings/<system>.md" '
+                                  'or "notes/<system>/<name>.md", lowercase')
     content: str = Field(description="the complete new file content (not a diff)")
 
 
 @mcp.tool()
-async def submit_notes(title: str, summary: str, author: str, changes: list[Change]) -> dict:
+async def submit_notes(ctx: Context, title: str, summary: str, author: str, changes: list[Change]) -> dict:
     """Propose new or updated notes. They become a pull request for review; nothing is published directly.
 
     Follow DISTILL.md (get_note("DISTILL.md")). Write for a new session that has to work
@@ -131,6 +213,7 @@ async def submit_notes(title: str, summary: str, author: str, changes: list[Chan
     author is the person whose session this came from (name or email).
     No passwords, tokens or keys: they are rejected.
     """
+    _require_core(ctx)
     items = [c.model_dump() for c in changes]
     errs = notes.check(items)
     if errs:
@@ -159,10 +242,11 @@ def distill_all() -> str:
 
 @mcp.custom_route("/start", methods=["GET"])
 async def start(request: Request) -> Response:
+    text = core_order()
     system = notes.match_folder(request.query_params.get("cwd", ""))
-    if not system:
-        return Response(status_code=204)
-    return PlainTextResponse(f"Team briefing for {system} (from gnops-kb):\n\n{_briefing(system)}")
+    if system:
+        text += f"\n\nThis folder belongs to {system}; its briefing is in the core."
+    return PlainTextResponse(text)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -203,4 +287,5 @@ if __name__ == "__main__":
             allowed_hosts=[f"{n}:*" for n in names],
             allowed_origins=[f"http://{n}:*" for n in names],
         )
-        mcp.run("streamable-http", host=args.host, port=args.port, transport_security=security)
+        mcp.run("streamable-http", host=args.host, port=args.port, transport_security=security,
+                session_idle_timeout=SESSION_IDLE_SECONDS)

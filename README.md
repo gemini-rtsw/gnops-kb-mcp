@@ -11,7 +11,8 @@ instructions a new notes repo starts with.
 
 | MCP | What it does |
 |---|---|
-| server instructions | team rules (`TEAM.md`) and the list of briefings, sent to every session at connect; rebuilt after each refresh |
+| server instructions | a mandatory order to read the core first, then the list of systems; sent to every session at connect, rebuilt after each refresh. Kept well under the ~4k characters Claude Code shows |
+| `get_core(part)` | the core every session reads before it starts: `TEAM.md`, `core/*.md` (general cross-system knowledge), every briefing in full, and an index of every note; split into parts of `CORE_PART_CHARS` (60k chars, under Claude Code's 25k-token tool result cap). Until a session has read every part, the other tools refuse and name the next part |
 | `list_briefings`, `get_briefing` | per-system briefings (`briefings/<system>.md`) |
 | `search_notes`, `get_note` | everything else (`notes/<system>/*.md`) |
 | `submit_notes` | propose new or updated files: a branch plus a pull request; passwords and tokens are rejected |
@@ -19,8 +20,12 @@ instructions a new notes repo starts with.
 | prompt `distill` | `/mcp__gnops-kb__distill` distills the current session and submits it |
 | prompt `distill_all` | `/mcp__gnops-kb__distill_all` distills your past local sessions |
 
-Plain HTTP: `GET /start?cwd=<dir>` returns the briefing for that folder (for
-the optional hook below), `GET /health`.
+A session is the MCP session (`Mcp-Session-Id`); idle sessions are kept for
+`SESSION_IDLE_HOURS` (24) so a chat that sits for a while doesn't have to read
+the core again.
+
+Plain HTTP: `GET /start?cwd=<dir>` returns the order to read the core and names
+the folder's system (for the optional hook below), `GET /health`.
 
 ## Install
 
@@ -39,8 +44,8 @@ The unit runs `ghcr.io/gemini-rtsw/gnops-kb-mcp:<version>-git<hash>` with
 claude mcp add --scope user --transport http gnops-kb http://<host>:8002/mcp
 ```
 
-Optional, to load the briefing automatically when a session starts or
-compacts in a matching folder: add to `~/.claude/settings.json`
+Optional, to repeat the order to read the core when a session starts, resumes
+or compacts: add to `~/.claude/settings.json`
 
 ```json
 "hooks": {
