@@ -65,6 +65,6 @@ or compacts: add to `~/.claude/settings.json`
 docker build -t gnops-kb-mcp:dev .
 mkdir -p /tmp/kb && chmod 777 /tmp/kb
 docker run --rm --network host -v /tmp/kb:/data gnops-kb-mcp:dev   # local-only notes repo
-python test_client.py http://localhost:8002/mcp
+python test_client.py http://localhost:8002/mcp            # --submit: also a real test proposal (test servers only)
 ./gemini-rtsw-ci/build_rpm.sh --profile lightweight --el 9
 ```
