@@ -12,7 +12,7 @@ instructions a new notes repo starts with.
 | MCP | What it does |
 |---|---|
 | server instructions | a mandatory order to read the core first, then the list of systems; sent to every session at connect, rebuilt after each refresh. Kept well under the ~4k characters Claude Code shows |
-| `get_core(part)` | the core every session reads before it starts: `TEAM.md`, `core/*.md` (general cross-system knowledge), every briefing in full, and an index of every note; split into parts of `CORE_PART_CHARS` (60k chars, under Claude Code's 25k-token tool result cap). Until a session has read every part, the other tools refuse and name the next part |
+| `get_core(part)` | the core every session reads before it starts: `TEAM.md`, `core/*.md` (general cross-system knowledge), every briefing in full, and an index of every note; built once after each refresh, not per call, and split into parts of `CORE_PART_CHARS` (25k chars; Claude Code saves larger tool results to a file the model may skip). Each part names the core version and ends with a key fragment; later parts come from the version the session started on, so a merge mid-read does not break its key. The other tools require the joined key (`core_key`); keys of a replaced version stay valid for `CORE_KEY_HOURS` (24) |
 | `list_briefings`, `get_briefing` | per-system briefings (`briefings/<system>.md`); the core carries them in full while the core fits `CORE_MAX_CHARS` (200k chars), else as summaries |
 | `list_notes`, `search_notes`, `get_note` | the detailed notes (`notes/<system>/*.md`): one system's list with descriptions, ranked word search (title and description hits first), one file |
 | `submit_notes` | propose new or updated files: a branch plus a pull request; passwords and tokens are rejected, and core/ and notes/ files need a `title:`/`description:` header (the description is what the index shows) |
@@ -20,13 +20,13 @@ instructions a new notes repo starts with.
 | prompt `distill` | `/mcp__gnops-kb__distill` distills the current session and submits it |
 | prompt `distill_all` | `/mcp__gnops-kb__distill_all` distills your past local sessions |
 
-A session is the MCP session (`Mcp-Session-Id`); idle sessions are kept for
-`SESSION_IDLE_HOURS` (24) so a chat that sits for a while doesn't have to read
-the core again.
+The notes checkout follows the remote every `REFRESH_SECONDS`; the core and the
+instructions are rebuilt then, so a merged note reaches new sessions within one
+refresh.
 
 Plain HTTP: `GET /start?cwd=<dir>` returns the order to read the core and names
-the folder's system (for the optional hook below), `GET /usage` (per session:
-core read, searches, notes opened; every call is also appended to
+the folder's system (for the optional hook below), `GET /usage` (recent tool
+calls: core parts read, searches, notes opened, refused calls; every call is also appended to
 `$KB_DATA/usage.jsonl`), `GET /health`.
 
 ## Install
