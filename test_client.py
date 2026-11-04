@@ -9,6 +9,7 @@ Needs the mcp package (pip install -r requirements.txt).
 
 import asyncio
 import json
+import re
 import sys
 
 from mcp import ClientSession
@@ -44,29 +45,31 @@ async def main(url: str):
             print("instructions:\n" + (init.instructions or "")[:600] + "\n")
             print("tools:  ", [t.name for t in (await s.list_tools()).tools])
             print("prompts:", [p.name for p in (await s.list_prompts()).prompts])
-            await call(s, "list_briefings", {})   # refused: the core comes first
-            part = 1
+            await call(s, "list_briefings", {})                       # refused: no key
+            await call(s, "list_briefings", {"core_key": "0000-0000"})  # refused: wrong key
+            frags, part = [], 1
             while True:
                 text = await call(s, "get_core", {"part": part})
-                print(f"  part {part}: {len(text)} chars, ends: {text[-120:]!r}")
-                if "core is complete" in text:
+                frags.append(re.search(r"Core key fragment \d+: (\w+)", text)[1])
+                print(f"  part {part}: {len(text)} chars")
+                if "That was the last part" in text:
                     break
-                if f"get_core(part={part + 1})" not in text:
-                    sys.exit("core did not lead to the next part")
                 part += 1
-            await call(s, "list_briefings", {})
-            await call(s, "search_notes", {"query": "co-authored"})
-            await call(s, "search_notes", {"query": "epics-base pin el8"})
-            await call(s, "list_notes", {"system": "vme-iocs"})
-            await call(s, "get_note", {"path": "TEAM.md"})
+            k = {"core_key": "-".join(frags)}
+            print("  core_key:", k["core_key"])
+            await call(s, "list_briefings", k)
+            await call(s, "search_notes", {"query": "co-authored", **k})
+            await call(s, "search_notes", {"query": "epics-base pin el8", **k})
+            await call(s, "list_notes", {"system": "vme-iocs", **k})
+            await call(s, "get_note", {"path": "TEAM.md", **k})
             await call(s, "submit_notes", {
-                "title": "Test proposal", "summary": "from test_client.py", "author": "test",
+                "title": "Test proposal", "summary": "from test_client.py", "author": "test", **k,
                 "changes": [{"path": "briefings/kbtest.md", "content": BRIEFING}]})
             await call(s, "submit_notes", {
-                "title": "Must be rejected", "summary": "header check", "author": "test",
+                "title": "Must be rejected", "summary": "header check", "author": "test", **k,
                 "changes": [{"path": "notes/kbtest/y.md", "content": "# No header\n"}]})
             await call(s, "submit_notes", {
-                "title": "Must be rejected", "summary": "secret check", "author": "test",
+                "title": "Must be rejected", "summary": "secret check", "author": "test", **k,
                 "changes": [{"path": "notes/kbtest/x.md", "content": "db password = hunter22\n"}]})
             p = await s.get_prompt("distill", {})
             print("distill prompt:", p.messages[0].content.text[:120].replace("\n", " "), "...")
