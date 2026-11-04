@@ -7,7 +7,7 @@ Every session that connects gets:
                  characters, so the order comes first and the rest stays short.
   tools          get_core(part) - the core: TEAM.md, core/*.md, every briefing
                  and an index of every note, in parts that fit one tool result;
-                 list_briefings, get_briefing, search_notes, get_note,
+                 list_briefings, get_briefing, list_notes, search_notes, get_note,
                  submit_notes (proposes changes as a pull request; never
                  edits the served notes). Until a session has read every part
                  of the core, the other tools refuse and say which part is next.
@@ -16,6 +16,7 @@ Every session that connects gets:
 Plain HTTP, for a SessionStart hook:
   GET /start?cwd=<dir>   the order to read the core, plus the briefing for that
                          folder when one matches
+  GET /usage             per-session tool use (did sessions read the core, search, open notes)
   GET /health
 
 Run:
@@ -27,6 +28,7 @@ Run:
 
 import argparse
 import asyncio
+import json
 import os
 import socket
 import threading
@@ -73,7 +75,9 @@ def build_instructions() -> str:
         "logs, PVs, the repo, the build); if the source disagrees, say so and propose a note update. "
         "Keep apart what you checked from what you only read.\n"
         f"Systems with a briefing (all included in the core): {systems}.\n"
-        "After the core: get_note(path) for the detailed notes it indexes, search_notes for words.\n"
+        "Look things up, never guess: the core starts with how to find things (search_notes, get_note, "
+        "list_notes, then the primary source). If something is not in the KB and you cannot check it, "
+        "say so.\n"
         "When the user asks to distill, save or share what this session learned, call "
         "get_note(\"DISTILL.md\") and follow it; for their past sessions, get_note(\"DISTILL_ALL.md\"). "
         "Changes go through submit_notes and are reviewed before anyone sees them. When this "
@@ -108,6 +112,32 @@ def _seen(ctx: Context) -> set[int]:
         return parts
 
 
+# Usage, to see whether sessions look things up: one JSON line per tool call in
+# $KB_DATA/usage.jsonl, and a per-session summary at GET /usage.
+USAGE = notes.DATA / "usage.jsonl"
+_usage: dict[str, dict] = {}
+
+
+def _log(ctx: Context, tool: str, **args) -> None:
+    key = _session_key(ctx)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _core_lock:
+        u = _usage.setdefault(key, {"session": key[:8], "first": now, "calls": {}, "searches": [], "read": []})
+        u["last"] = now
+        u["calls"][tool] = u["calls"].get(tool, 0) + 1
+        if tool == "search_notes":
+            u["searches"].append(args.get("query", ""))
+        elif tool in ("get_note", "get_briefing", "list_notes"):
+            u["read"].append(str(next(iter(args.values()), "")))
+        while len(_usage) > 500:   # oldest sessions first
+            del _usage[next(iter(_usage))]
+    try:
+        with open(USAGE, "a") as f:
+            f.write(json.dumps({"t": now, "session": key[:8], "tool": tool, **args}) + "\n")
+    except OSError:
+        pass
+
+
 def _require_core(ctx: Context) -> None:
     seen = _seen(ctx)
     if DONE in seen:   # a refresh may change the part count later; finished stays finished
@@ -125,10 +155,11 @@ def get_core(ctx: Context, part: int = 1) -> str:
     """MANDATORY first call in every session: the team's core knowledge, in parts.
 
     Start with part=1 and call each next part until the result says the core is complete.
-    Holds the working agreement (TEAM.md), general cross-system knowledge (core/), every
-    system briefing in full, and an index of every detailed note. The other tools refuse
-    until every part has been read.
+    Holds how to find things, the working agreement (TEAM.md), general cross-system
+    knowledge (core/), the system briefings, and an index of every detailed note. The
+    other tools refuse until every part has been read.
     """
+    _log(ctx, "get_core", part=part)
     parts = notes.core_parts()
     n = len(parts)
     if not 1 <= part <= n:
@@ -157,6 +188,7 @@ def _briefing(system: str) -> str:
 def list_briefings(ctx: Context) -> list[dict]:
     """List the systems that have a briefing, with the folders each one covers."""
     _require_core(ctx)
+    _log(ctx, "list_briefings")
     return notes.briefings()
 
 
@@ -164,26 +196,42 @@ def list_briefings(ctx: Context) -> list[dict]:
 def get_briefing(ctx: Context, system: str) -> str:
     """The full briefing for one system (e.g. "ted"): state, hosts, procedures, gotchas, open work.
 
-    The core already includes every briefing; use this to re-read one later in a long session.
+    The core includes every briefing, in full or as a summary; use this for the full text.
     """
     _require_core(ctx)
+    _log(ctx, "get_briefing", system=system)
     return _briefing(system)
 
 
 @mcp.tool()
 def search_notes(ctx: Context, query: str, limit: int = 10) -> list[dict]:
-    """Search all briefings and notes for words; returns paths and the matching lines.
+    """Search all notes for words: ranked by how many words a file contains, title and description first.
 
-    Follow up with get_note(path) to read a whole note.
+    Use several terms (names, PVs, hosts, GNFR/REL keys, error text). Returns path, title,
+    description and matching lines; read the whole file with get_note(path).
     """
     _require_core(ctx)
+    _log(ctx, "search_notes", query=query)
     return notes.search(query, max(1, min(limit, 50)))
+
+
+@mcp.tool()
+def list_notes(ctx: Context, system: str) -> list[dict]:
+    """The detailed notes for one system (notes/<system>/), with title and one-line description."""
+    _require_core(ctx)
+    _log(ctx, "list_notes", system=system)
+    found = notes.note_index(system)
+    if not found:
+        known = sorted({n["system"] for n in notes.note_index()})
+        raise ToolError(f"no notes for {system!r}; systems with notes: {', '.join(known)}")
+    return found
 
 
 @mcp.tool()
 def get_note(ctx: Context, path: str) -> str:
     """Read one file from the notes repo by path, e.g. "notes/ted/grafana.md"."""
     _require_core(ctx)
+    _log(ctx, "get_note", path=path)
     text = notes.read(path)
     if text is None:
         raise ToolError(f"no such note: {path}")
@@ -208,12 +256,17 @@ async def submit_notes(ctx: Context, title: str, summary: str, author: str, chan
     why, the next step and its owner, and changes made with before and after values.
     Keep the briefing short (current state plus pointers); put the detail in notes/.
 
+    Every core/ and notes/ file starts with a header (--- / title: / description: / ---);
+    the description is one line saying what the file answers, and it is what sessions
+    see in the index, so write it for someone deciding whether to open the file.
+
     Each change is the complete new content of one file. Read the current file
     first (get_briefing / get_note) and merge into it rather than replacing it.
     author is the person whose session this came from (name or email).
     No passwords, tokens or keys: they are rejected.
     """
     _require_core(ctx)
+    _log(ctx, "submit_notes", title=title)
     items = [c.model_dump() for c in changes]
     errs = notes.check(items)
     if errs:
@@ -247,6 +300,14 @@ async def start(request: Request) -> Response:
     if system:
         text += f"\n\nThis folder belongs to {system}; its briefing is in the core."
     return PlainTextResponse(text)
+
+
+@mcp.custom_route("/usage", methods=["GET"])
+async def usage(request: Request) -> Response:
+    """Per-session tool use, newest first: did sessions read the core, search, open notes?"""
+    with _core_lock:
+        rows = [{**u, "core_done": DONE in _core_read.get(k, (set(), 0))[0]} for k, u in _usage.items()]
+    return JSONResponse(rows[::-1])
 
 
 @mcp.custom_route("/health", methods=["GET"])

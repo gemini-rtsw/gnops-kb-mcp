@@ -13,9 +13,9 @@ instructions a new notes repo starts with.
 |---|---|
 | server instructions | a mandatory order to read the core first, then the list of systems; sent to every session at connect, rebuilt after each refresh. Kept well under the ~4k characters Claude Code shows |
 | `get_core(part)` | the core every session reads before it starts: `TEAM.md`, `core/*.md` (general cross-system knowledge), every briefing in full, and an index of every note; split into parts of `CORE_PART_CHARS` (60k chars, under Claude Code's 25k-token tool result cap). Until a session has read every part, the other tools refuse and name the next part |
-| `list_briefings`, `get_briefing` | per-system briefings (`briefings/<system>.md`) |
-| `search_notes`, `get_note` | everything else (`notes/<system>/*.md`) |
-| `submit_notes` | propose new or updated files: a branch plus a pull request; passwords and tokens are rejected |
+| `list_briefings`, `get_briefing` | per-system briefings (`briefings/<system>.md`); the core carries them in full while the core fits `CORE_MAX_CHARS` (200k chars), else as summaries |
+| `list_notes`, `search_notes`, `get_note` | the detailed notes (`notes/<system>/*.md`): one system's list with descriptions, ranked word search (title and description hits first), one file |
+| `submit_notes` | propose new or updated files: a branch plus a pull request; passwords and tokens are rejected, and core/ and notes/ files need a `title:`/`description:` header (the description is what the index shows) |
 | prompt `brief` | `/mcp__gnops-kb__brief ted` loads a briefing into the session |
 | prompt `distill` | `/mcp__gnops-kb__distill` distills the current session and submits it |
 | prompt `distill_all` | `/mcp__gnops-kb__distill_all` distills your past local sessions |
@@ -25,7 +25,9 @@ A session is the MCP session (`Mcp-Session-Id`); idle sessions are kept for
 the core again.
 
 Plain HTTP: `GET /start?cwd=<dir>` returns the order to read the core and names
-the folder's system (for the optional hook below), `GET /health`.
+the folder's system (for the optional hook below), `GET /usage` (per session:
+core read, searches, notes opened; every call is also appended to
+`$KB_DATA/usage.jsonl`), `GET /health`.
 
 ## Install
 

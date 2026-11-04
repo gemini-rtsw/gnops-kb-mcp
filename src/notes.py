@@ -47,6 +47,8 @@ MAX_FILES = 20
 MAX_BYTES = 64 * 1024
 # Claude Code caps one MCP tool result at 25k tokens by default; ~4 characters a token.
 PART_CHARS = int(os.environ.get("CORE_PART_CHARS", "60000"))
+# Above this the core carries briefing summaries instead of full briefings (~50k tokens).
+MAX_CORE = int(os.environ.get("CORE_MAX_CHARS", "200000"))
 PATH_OK = re.compile(r"^(core/[a-z0-9][a-z0-9_-]*\.md|briefings/[a-z0-9][a-z0-9_-]*\.md|notes/[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_.-]*\.md)$")
 
 # Rejected outright in proposals; the review is the second check.
@@ -146,35 +148,92 @@ def match_folder(cwd: str) -> str | None:
     return best
 
 
-def note_index() -> list[dict]:
-    """Every file under notes/, with its title and description (header, else first heading)."""
+LOOKUP = """\
+# How to find things (read this first)
+
+This core is a map, not everything the team knows. Look things up; never guess.
+
+1. Start from this core: the working agreement, general knowledge (core/),
+   the system briefings and the index of detailed notes at the end.
+2. Not answered here? search_notes with several terms (names, PVs, hosts,
+   GNFR/REL keys, error text), then get_note(path) on the hits. Notes for one
+   system: list_notes(system). A briefing shown here as a summary:
+   get_briefing(system) for the full text.
+3. Notes are leads. Before the user acts on a fact (fault status, config,
+   versions, live values), check it at the source the note names: Jira, TED
+   telemetry and logs, PVs, the repo, the CI build, rpm-repo.
+4. Production: you have no access. Ask the user for the exact command and
+   host; they run it and paste the output.
+5. Not in the KB and not checkable? Say so plainly: "not in the KB". Do not
+   fill the gap from general knowledge or a plausible guess, and do not
+   present a guess as a finding. When you then find it, offer to distill it.
+"""
+
+
+def _describe(meta: dict, body: str) -> tuple[str, str]:
+    """A note's title and one-line description: from its header, else its first heading and paragraph."""
+    lines = [ln.strip() for ln in body.splitlines()]
+    heading = next((ln.lstrip("# ").strip() for ln in lines if ln.startswith("#")), "")
+    paras = [p.split("\n") for p in re.split(r"\n\s*\n", "\n".join(lines))]
+    para = next((" ".join(p) for p in paras
+                 if p[0] and not p[0].startswith(("#", "|", "```", "-", "*", ">", "<", "["))), "")
+    desc = meta.get("description") or (para[:157] + "..." if len(para) > 160 else para)
+    return meta.get("title") or heading, desc
+
+
+def note_index(system: str | None = None) -> list[dict]:
+    """Files under notes/ (or notes/<system>/), with title and one-line description."""
+    root = REPO / "notes" / system if system else REPO / "notes"
     out = []
-    for p in sorted((REPO / "notes").glob("**/*.md")):
+    for p in sorted(root.glob("**/*.md")):
         text = p.read_text(errors="replace")
         meta, body = _header(text)
-        heading = next((ln.lstrip("# ").strip() for ln in body.splitlines() if ln.startswith("#")), "")
-        out.append({"path": str(p.relative_to(REPO)), "title": meta.get("title") or heading or p.stem,
-                    "description": meta.get("description", ""), "chars": len(text)})
+        title, desc = _describe(meta, body)
+        rel = p.relative_to(REPO)
+        out.append({"path": str(rel), "system": rel.parts[1], "title": title or p.stem,
+                    "description": desc, "chars": len(text)})
     return out
 
 
+def _summary(body: str) -> str:
+    """A briefing's text up to the end of its first ## section, plus the headings of the rest."""
+    secs = re.split(r"(?m)^(?=## )", body.strip())
+    n = 2 if not secs[0].startswith("## ") else 1   # any preamble, then the first section
+    heads = [r.splitlines()[0].lstrip("# ") for r in secs[n:]]
+    return "".join(secs[:n]).strip() + (f"\n\nMore sections (get_briefing): {', '.join(heads)}" if heads else "")
+
+
 def core_sections() -> list[str]:
-    """The core, as sections in reading order: rules, general knowledge, briefings, index."""
-    secs = []
+    """The core, in reading order: lookup rules, working agreement, general knowledge, briefings, index.
+
+    Briefings go in full while the whole core fits CORE_MAX_CHARS, else as summaries.
+    """
+    secs = [LOOKUP.strip()]
     team = read("TEAM.md")
     if team:
         secs.append(f"# Working agreement (TEAM.md)\n\n{team.strip()}")
     for p in sorted((REPO / "core").glob("*.md")):
-        secs.append(f"# General knowledge: {p.relative_to(REPO)}\n\n{p.read_text(errors='replace').strip()}")
+        meta, body = _header(p.read_text(errors="replace"))
+        about = f"{meta['description']}\n\n" if meta.get("description") else ""
+        secs.append(f"# General knowledge: {p.relative_to(REPO)}\n{about}\n{body.strip()}")
+    index = note_index()
+    groups: dict[str, list[str]] = {}
+    for n in index:
+        groups.setdefault(n["system"], []).append(
+            f"- {n['path']} ({n['chars'] // 1000 + 1}k): {n['title']}" + (f" - {n['description']}" if n["description"] else ""))
+    idx = "# Index of detailed notes (get_note(path); list_notes(system))\n" + "".join(
+        f"\n## {g} ({len(rows)})\n" + "\n".join(rows) + "\n" for g, rows in sorted(groups.items()))
+    full, short = [], []
     for b in briefings():
         _, body = _header(read(f"briefings/{b['system']}.md") or "")
-        folders = ", ".join(b["folders"]) or b["system"]
-        secs.append(f"# Briefing: {b['system']} - {b['title']}\n"
-                    f"{b['description']} (folders: {folders})\n\n{body.strip()}")
-    rows = [f"- {n['path']} ({n['chars'] // 1000 + 1}k): {n['title']}"
-            + (f" - {n['description']}" if n["description"] else "") for n in note_index()]
-    if rows:
-        secs.append("# Index of detailed notes (read with get_note(path))\n\n" + "\n".join(rows))
+        head = (f"# Briefing: {b['system']} - {b['title']}\n"
+                f"{b['description']} (folders: {', '.join(b['folders']) or b['system']})\n\n")
+        full.append(head + body.strip())
+        short.append(head + "[summary; full text: get_briefing]\n" + _summary(body))
+    fixed = sum(len(x) for x in secs) + len(idx)
+    secs += full if fixed + sum(len(x) for x in full) <= MAX_CORE else short
+    if index:
+        secs.append(idx.strip())
     return secs
 
 
@@ -200,8 +259,8 @@ def core_parts(limit: int = PART_CHARS) -> list[str]:
 
 
 def search(query: str, limit: int) -> list[dict]:
-    """Rank notes by how often the query words occur; return matching lines."""
-    words = [w.lower() for w in re.findall(r"[\w.:-]+", query) if len(w) > 1]
+    """Rank files by how many query words they contain, with title and description hits counting most."""
+    words = list(dict.fromkeys(w.lower() for w in re.findall(r"[\w.:-]+", query) if len(w) > 1))
     if not words:
         return []
     hits = []
@@ -209,12 +268,18 @@ def search(query: str, limit: int) -> list[dict]:
         if ".git" in p.parts:
             continue
         text = p.read_text(errors="replace")
-        low = text.lower()
-        score = sum(low.count(w) for w in words)
-        if not score:
+        meta, body = _header(text)
+        title, desc = _describe(meta, body)
+        rel = str(p.relative_to(REPO))
+        low, head = text.lower(), f"{rel} {title} {desc}".lower()
+        found = [w for w in words if w in low]
+        if not found:
             continue
-        lines = [ln.strip() for ln in text.splitlines() if any(w in ln.lower() for w in words)]
-        hits.append({"path": str(p.relative_to(REPO)), "score": score, "lines": lines[:8]})
+        score = (100 * len(found) + 20 * sum(w in head for w in words)
+                 + sum(min(low.count(w), 10) for w in found))
+        lines = [ln.strip() for ln in body.splitlines() if any(w in ln.lower() for w in words)]
+        hits.append({"path": rel, "title": title, "description": desc, "score": score,
+                     "matched": f"{len(found)}/{len(words)} words", "lines": lines[:6]})
     hits.sort(key=lambda h: -h["score"])
     return hits[:limit]
 
@@ -228,6 +293,10 @@ def check(changes: list[dict]) -> list[str]:
         path, content = c.get("path", ""), c.get("content", "")
         if not PATH_OK.match(path):
             errs.append(f"{path}: must be core/<name>.md, briefings/<system>.md or notes/<system>/<name>.md (lowercase)")
+        meta, _ = _header(content)
+        if PATH_OK.match(path) and not (meta.get("title") and meta.get("description")):
+            errs.append(f"{path}: start with a header block: ---, title: <name>, description: <one line "
+                        "saying what this file answers, so a session can find it from the index>, ---")
         if len(content.encode()) > MAX_BYTES:
             errs.append(f"{path}: over {MAX_BYTES // 1024} KB")
         for n, line in enumerate(content.splitlines(), 1):
