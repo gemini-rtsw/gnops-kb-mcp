@@ -9,14 +9,15 @@ Every session that connects gets:
                  and an index of every note, in parts that fit one tool result;
                  list_briefings, get_briefing, list_notes, search_notes, get_note,
                  submit_notes (proposes changes as a pull request; never
-                 edits the served notes). Until a session has read every part
-                 of the core, the other tools refuse and say which part is next.
+                 edits the served notes). Each part of the core ends with a key
+                 fragment; the other tools require the joined key (core_key), so
+                 only a session that read every part can use them.
   prompts        brief(system), distill, distill_all
 
 Plain HTTP, for a SessionStart hook:
   GET /start?cwd=<dir>   the order to read the core, plus the briefing for that
                          folder when one matches
-  GET /usage             per-session tool use (did sessions read the core, search, open notes)
+  GET /usage?n=200       the most recent tool calls (do sessions read the core, search, open notes)
   GET /health
 
 Run:
@@ -28,6 +29,7 @@ Run:
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import socket
@@ -44,9 +46,8 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 import notes
 
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", "300"))
-# The SDK drops an idle HTTP session after 30 minutes, and a reconnect would make
-# the session read the core again. Claude sessions sit idle for hours.
-SESSION_IDLE_SECONDS = float(os.environ.get("SESSION_IDLE_HOURS", "24")) * 3600
+# How long a core key stays valid after the core changes (a merged note changes it).
+KEY_HOURS = float(os.environ.get("CORE_KEY_HOURS", "24"))
 
 mcp = MCPServer("gnops-kb")
 
@@ -56,12 +57,13 @@ def core_order() -> str:
     size = sum(len(p) for p in parts) // 4000 + 1
     return (
         f"MANDATORY, before your first reply and before any other tool call: call gnops-kb "
-        f"get_core(part=1), then get_core(part=2) and so on until it says the core is complete "
-        f"({len(parts)} parts, about {size}k tokens). Do this in every session, even when the task "
-        "looks small or unrelated: the core is the team's working agreement (what you may and may "
-        "not do on production, and how the user works with you) and the knowledge you need to work "
-        "at expert level. The other gnops-kb tools refuse until you have read it. After your context "
-        "is compacted or cleared, read it again."
+        f"get_core(part=1), then part=2 and so on through part={len(parts)} ({len(parts)} parts, "
+        f"about {size}k tokens). Read each part to its end: the last line of every part holds one "
+        "fragment of the core key, and every other gnops-kb tool requires the whole key "
+        "(core_key). Do this in every session, even when the task looks small or unrelated: the "
+        "core is the team's working agreement (what you may and may not do on production, and how "
+        "the user works with you) and the knowledge you need to work at expert level. After your "
+        "context is compacted or cleared, read it again."
     )
 
 
@@ -90,90 +92,95 @@ def reload() -> None:
     mcp._lowlevel_server.instructions = build_instructions()
 
 
-# Parts of the core each session has read: {session key: (parts, last seen)}.
-# A new session (reconnect, new chat) reads it again.
-_core_read: dict[str, tuple[set[int], float]] = {}
-_core_lock = threading.Lock()
-DONE = 0   # in a session's set once it has read every part
+# The gate. Claude Code speaks the stateless MCP protocol (2026-07-28): no
+# Mcp-Session-Id and nothing else that ties two calls to one conversation, so the
+# server cannot remember who has read the core. Instead every part ends with one
+# fragment of a key, and the other tools require the whole key: only a session
+# that read every part to its end has it. Keys of earlier core versions stay
+# valid for KEY_HOURS, so a merged note does not lock out sessions mid-task.
+_keys: dict[str, float] = {}   # key -> when its core version was last served
+_lock = threading.Lock()
 
 
-def _session_key(ctx: Context) -> str:
-    """The Mcp-Session-Id over HTTP (the SDK hands each request a new session object); stdio has one session."""
-    return (ctx.headers or {}).get("mcp-session-id") or "stdio"
+def _fragments(parts: list[str]) -> list[str]:
+    version = hashlib.sha256("\0".join(parts).encode()).hexdigest()
+    return [hashlib.sha256(f"{version}:{i}".encode()).hexdigest()[:4] for i in range(len(parts))]
 
 
-def _seen(ctx: Context) -> set[int]:
+def _valid(key: str) -> bool:
     now = time.time()
-    with _core_lock:
-        for k in [k for k, (_, t) in _core_read.items() if now - t > SESSION_IDLE_SECONDS]:
-            del _core_read[k]
-        parts, _ = _core_read.get(_session_key(ctx), (set(), now))
-        _core_read[_session_key(ctx)] = (parts, now)
-        return parts
+    with _lock:
+        _keys["-".join(_fragments(notes.core_parts()))] = now
+        for k in [k for k, t in _keys.items() if now - t > KEY_HOURS * 3600]:
+            del _keys[k]
+        return key.strip().lower() in _keys
+
+
+def _require_core(core_key: str) -> None:
+    if _valid(core_key):
+        return
+    n = len(notes.core_parts())
+    raise ToolError(
+        f"{'Wrong' if core_key else 'Missing'} core_key. Read the team core first: get_core(part=1) "
+        f"through get_core(part={n}), each to its last line, and join the {n} key fragments with '-' "
+        "in part order. It holds the working agreement and the knowledge this tool's answers depend on."
+    )
 
 
 # Usage, to see whether sessions look things up: one JSON line per tool call in
-# $KB_DATA/usage.jsonl, and a per-session summary at GET /usage.
+# $KB_DATA/usage.jsonl, and the most recent calls at GET /usage.
 USAGE = notes.DATA / "usage.jsonl"
-_usage: dict[str, dict] = {}
+_usage: list[dict] = []
 
 
-def _log(ctx: Context, tool: str, **args) -> None:
-    key = _session_key(ctx)
-    now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    with _core_lock:
-        u = _usage.setdefault(key, {"session": key[:8], "first": now, "calls": {}, "searches": [], "read": []})
-        u["last"] = now
-        u["calls"][tool] = u["calls"].get(tool, 0) + 1
-        if tool == "search_notes":
-            u["searches"].append(args.get("query", ""))
-        elif tool in ("get_note", "get_briefing", "list_notes"):
-            u["read"].append(str(next(iter(args.values()), "")))
-        while len(_usage) > 500:   # oldest sessions first
-            del _usage[next(iter(_usage))]
+def _log(ctx: Context, tool: str, ok: bool = True, **args) -> None:
+    meta = ctx.request_context.meta or {}
+    client = (meta.get("io.modelcontextprotocol/clientInfo") or {}).get("name", "")
+    rec = {"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "tool": tool, "ok": ok, "client": client,
+           "session": ((ctx.headers or {}).get("mcp-session-id") or "")[:8], **args}
+    with _lock:
+        _usage.append(rec)
+        del _usage[:-1000]
     try:
         with open(USAGE, "a") as f:
-            f.write(json.dumps({"t": now, "session": key[:8], "tool": tool, **args}) + "\n")
+            f.write(json.dumps(rec) + "\n")
     except OSError:
         pass
 
 
-def _require_core(ctx: Context) -> None:
-    seen = _seen(ctx)
-    if DONE in seen:   # a refresh may change the part count later; finished stays finished
-        return
-    n = len(notes.core_parts())
-    nxt = next((i for i in range(1, n + 1) if i not in seen), n)
-    raise ToolError(
-        f"Read the team core first: call get_core(part={nxt}) and continue through part {n}. "
-        "It holds the working agreement and the knowledge this tool's answers depend on."
-    )
+def _gate(ctx: Context, core_key: str, tool: str, **args) -> None:
+    try:
+        _require_core(core_key)
+    except ToolError:
+        _log(ctx, tool, ok=False, **args)
+        raise
+    _log(ctx, tool, **args)
+
+
+KEY = Field("", description="the core key: the key fragments from the last line of each get_core part, joined with '-'")
 
 
 @mcp.tool()
 def get_core(ctx: Context, part: int = 1) -> str:
     """MANDATORY first call in every session: the team's core knowledge, in parts.
 
-    Start with part=1 and call each next part until the result says the core is complete.
-    Holds how to find things, the working agreement (TEAM.md), general cross-system
-    knowledge (core/), the system briefings, and an index of every detailed note. The
-    other tools refuse until every part has been read.
+    Call part=1, 2, ... through the last part, and read each to its end: its last line holds
+    one fragment of the core key that every other tool requires. Holds how to find things,
+    the working agreement (TEAM.md), general cross-system knowledge (core/), the system
+    briefings, and an index of every detailed note.
     """
     _log(ctx, "get_core", part=part)
     parts = notes.core_parts()
     n = len(parts)
     if not 1 <= part <= n:
         raise ToolError(f"part must be 1-{n}")
-    seen = _seen(ctx)
-    seen.add(part)
-    missing = [i for i in range(1, n + 1) if i not in seen]
-    if not missing:
-        seen.add(DONE)
-        tail = ("The core is complete. Follow the working agreement for the rest of this session. "
-                "Use get_note(path) for any note in the index that bears on the task.")
-    else:
-        tail = f"Not complete yet: call get_core(part={missing[0]}) now."
-    return f"[gnops-kb core, part {part} of {n}]\n\n{parts[part - 1]}\n\n[{tail}]"
+    frag = _fragments(parts)[part - 1]
+    nxt = (f"Now call get_core(part={part + 1})." if part < n else
+           f"That was the last part. Your core key is the {n} fragments joined with '-' in part order "
+           "(part 1's first); pass it as core_key to every other gnops-kb tool. Follow the working "
+           "agreement for the rest of this session.")
+    return (f"[gnops-kb core, part {part} of {n}]\n\n{parts[part - 1]}\n\n"
+            f"[End of part {part} of {n}. Core key fragment {part}: {frag}. {nxt}]")
 
 
 def _briefing(system: str) -> str:
@@ -185,41 +192,37 @@ def _briefing(system: str) -> str:
 
 
 @mcp.tool()
-def list_briefings(ctx: Context) -> list[dict]:
+def list_briefings(ctx: Context, core_key: str = KEY) -> list[dict]:
     """List the systems that have a briefing, with the folders each one covers."""
-    _require_core(ctx)
-    _log(ctx, "list_briefings")
+    _gate(ctx, core_key, "list_briefings")
     return notes.briefings()
 
 
 @mcp.tool()
-def get_briefing(ctx: Context, system: str) -> str:
+def get_briefing(ctx: Context, system: str, core_key: str = KEY) -> str:
     """The full briefing for one system (e.g. "ted"): state, hosts, procedures, gotchas, open work.
 
     The core includes every briefing, in full or as a summary; use this for the full text.
     """
-    _require_core(ctx)
-    _log(ctx, "get_briefing", system=system)
+    _gate(ctx, core_key, "get_briefing", system=system)
     return _briefing(system)
 
 
 @mcp.tool()
-def search_notes(ctx: Context, query: str, limit: int = 10) -> list[dict]:
+def search_notes(ctx: Context, query: str, core_key: str = KEY, limit: int = 10) -> list[dict]:
     """Search all notes for words: ranked by how many words a file contains, title and description first.
 
     Use several terms (names, PVs, hosts, GNFR/REL keys, error text). Returns path, title,
     description and matching lines; read the whole file with get_note(path).
     """
-    _require_core(ctx)
-    _log(ctx, "search_notes", query=query)
+    _gate(ctx, core_key, "search_notes", query=query)
     return notes.search(query, max(1, min(limit, 50)))
 
 
 @mcp.tool()
-def list_notes(ctx: Context, system: str) -> list[dict]:
+def list_notes(ctx: Context, system: str, core_key: str = KEY) -> list[dict]:
     """The detailed notes for one system (notes/<system>/), with title and one-line description."""
-    _require_core(ctx)
-    _log(ctx, "list_notes", system=system)
+    _gate(ctx, core_key, "list_notes", system=system)
     found = notes.note_index(system)
     if not found:
         known = sorted({n["system"] for n in notes.note_index()})
@@ -228,10 +231,9 @@ def list_notes(ctx: Context, system: str) -> list[dict]:
 
 
 @mcp.tool()
-def get_note(ctx: Context, path: str) -> str:
+def get_note(ctx: Context, path: str, core_key: str = KEY) -> str:
     """Read one file from the notes repo by path, e.g. "notes/ted/grafana.md"."""
-    _require_core(ctx)
-    _log(ctx, "get_note", path=path)
+    _gate(ctx, core_key, "get_note", path=path)
     text = notes.read(path)
     if text is None:
         raise ToolError(f"no such note: {path}")
@@ -245,7 +247,8 @@ class Change(BaseModel):
 
 
 @mcp.tool()
-async def submit_notes(ctx: Context, title: str, summary: str, author: str, changes: list[Change]) -> dict:
+async def submit_notes(ctx: Context, title: str, summary: str, author: str, changes: list[Change],
+                       core_key: str = KEY) -> dict:
     """Propose new or updated notes. They become a pull request for review; nothing is published directly.
 
     Follow DISTILL.md (get_note("DISTILL.md")). Write for a new session that has to work
@@ -265,8 +268,7 @@ async def submit_notes(ctx: Context, title: str, summary: str, author: str, chan
     author is the person whose session this came from (name or email).
     No passwords, tokens or keys: they are rejected.
     """
-    _require_core(ctx)
-    _log(ctx, "submit_notes", title=title)
+    _gate(ctx, core_key, "submit_notes", title=title)
     items = [c.model_dump() for c in changes]
     errs = notes.check(items)
     if errs:
@@ -304,10 +306,13 @@ async def start(request: Request) -> Response:
 
 @mcp.custom_route("/usage", methods=["GET"])
 async def usage(request: Request) -> Response:
-    """Per-session tool use, newest first: did sessions read the core, search, open notes?"""
-    with _core_lock:
-        rows = [{**u, "core_done": DONE in _core_read.get(k, (set(), 0))[0]} for k, u in _usage.items()]
-    return JSONResponse(rows[::-1])
+    """The most recent tool calls, newest first: do sessions read the core, search, open notes?
+
+    ok=false is a call refused for a missing or wrong core key.
+    """
+    with _lock:
+        rows = _usage[::-1][:int(request.query_params.get("n", "200"))]
+    return JSONResponse(rows)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -348,5 +353,6 @@ if __name__ == "__main__":
             allowed_hosts=[f"{n}:*" for n in names],
             allowed_origins=[f"http://{n}:*" for n in names],
         )
+        # Clients on the older, stateful protocol keep an idle session a day instead of 30 min.
         mcp.run("streamable-http", host=args.host, port=args.port, transport_security=security,
-                session_idle_timeout=SESSION_IDLE_SECONDS)
+                session_idle_timeout=24 * 3600)

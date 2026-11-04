@@ -45,8 +45,9 @@ SEED = Path(__file__).parent / "seed"
 
 MAX_FILES = 20
 MAX_BYTES = 64 * 1024
-# Claude Code caps one MCP tool result at 25k tokens by default; ~4 characters a token.
-PART_CHARS = int(os.environ.get("CORE_PART_CHARS", "60000"))
+# Claude Code saves a large MCP tool result to a file instead of showing it (a 58k-character
+# part was saved, a 12k one was shown, 2026-11-04), and the model may never read the file.
+PART_CHARS = int(os.environ.get("CORE_PART_CHARS", "25000"))
 # Above this the core carries briefing summaries instead of full briefings (~50k tokens).
 MAX_CORE = int(os.environ.get("CORE_MAX_CHARS", "200000"))
 PATH_OK = re.compile(r"^(core/[a-z0-9][a-z0-9_-]*\.md|briefings/[a-z0-9][a-z0-9_-]*\.md|notes/[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_.-]*\.md)$")
