@@ -1,9 +1,11 @@
 """Smoke-test a running gnops-kb server: instructions, the core gate, tools, prompts, a proposal.
 
-  python test_client.py http://HOST:8002/mcp
+  python test_client.py http://HOST:8002/mcp [--submit]
 
-Submits a small test proposal (a branch, or a pull request when the server has
-a remote) and checks that a fake password is rejected.
+Checks that proposals without a header or with a fake password are rejected.
+With --submit it also makes a real test proposal: a branch (and a pull request
+when the server has a token) on the server's notes remote. Use it only against
+a test server; on the live server the branch lands in gnops-kb-notes.
 Needs the mcp package (pip install -r requirements.txt).
 """
 
@@ -37,7 +39,7 @@ A briefing written by test_client.py.
 """
 
 
-async def main(url: str):
+async def main(url: str, submit: bool):
     async with streamable_http_client(url) as (read, write):
         async with ClientSession(read, write) as s:
             init = await s.initialize()
@@ -64,20 +66,23 @@ async def main(url: str):
             await call(s, "search_notes", {"query": "epics-base pin el8", **k})
             await call(s, "list_notes", {"system": "vme-iocs", **k})
             await call(s, "get_note", {"path": "TEAM.md", **k})
-            await call(s, "submit_notes", {
-                "title": "Test proposal", "summary": "from test_client.py", "author": "test", **k,
-                "changes": [{"path": "briefings/kbtest.md", "content": BRIEFING}]})
+            if submit:
+                await call(s, "submit_notes", {
+                    "title": "Test proposal", "summary": "from test_client.py", "author": "test", **k,
+                    "changes": [{"path": "briefings/kbtest.md", "content": BRIEFING}]})
             await call(s, "submit_notes", {
                 "title": "Must be rejected", "summary": "header check", "author": "test", **k,
                 "changes": [{"path": "notes/kbtest/y.md", "content": "# No header\n"}]})
             await call(s, "submit_notes", {
                 "title": "Must be rejected", "summary": "secret check", "author": "test", **k,
-                "changes": [{"path": "notes/kbtest/x.md", "content": "db password = hunter22\n"}]})
+                "changes": [{"path": "notes/kbtest/x.md",
+                             "content": "---\ntitle: x\ndescription: x\n---\ndb password = hunter22\n"}]})
             p = await s.get_prompt("distill", {})
             print("distill prompt:", p.messages[0].content.text[:120].replace("\n", " "), "...")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    args = [a for a in sys.argv[1:] if a != "--submit"]
+    if len(args) != 1:
         sys.exit(__doc__)
-    asyncio.run(main(sys.argv[1]))
+    asyncio.run(main(args[0], "--submit" in sys.argv))
