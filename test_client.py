@@ -47,14 +47,16 @@ async def main(url: str):
             print("prompts:", [p.name for p in (await s.list_prompts()).prompts])
             await call(s, "list_briefings", {})                       # refused: no key
             await call(s, "list_briefings", {"core_key": "0000-0000"})  # refused: wrong key
-            frags, part = [], 1
+            frags, part, version = [], 1, ""
             while True:
-                text = await call(s, "get_core", {"part": part})
+                text = await call(s, "get_core", {"part": part, "version": version})
                 frags.append(re.search(r"Core key fragment \d+: (\w+)", text)[1])
+                version = re.search(r"core version (\w+)", text)[1]
                 print(f"  part {part}: {len(text)} chars")
                 if "That was the last part" in text:
                     break
                 part += 1
+            await call(s, "get_core", {"part": 2, "version": "00000000"})  # refused: unknown version
             k = {"core_key": "-".join(frags)}
             print("  core_key:", k["core_key"])
             await call(s, "list_briefings", k)

@@ -53,11 +53,12 @@ mcp = MCPServer("gnops-kb")
 
 
 def core_order() -> str:
-    parts = notes.core_parts()
+    parts = _core()[1]["parts"]
     size = sum(len(p) for p in parts) // 4000 + 1
     return (
         f"MANDATORY, before your first reply and before any other tool call: call gnops-kb "
         f"get_core(part=1), then part=2 and so on through part={len(parts)} ({len(parts)} parts, "
+        "each with the version the previous part names, "
         f"about {size}k tokens). Read each part to its end: the last line of every part holds one "
         "fragment of the core key, and every other gnops-kb tool requires the whole key "
         "(core_key). Do this in every session, even when the task looks small or unrelated: the "
@@ -89,6 +90,7 @@ def build_instructions() -> str:
 
 
 def reload() -> None:
+    rebuild()
     mcp._lowlevel_server.instructions = build_instructions()
 
 
@@ -96,30 +98,55 @@ def reload() -> None:
 # Mcp-Session-Id and nothing else that ties two calls to one conversation, so the
 # server cannot remember who has read the core. Instead every part ends with one
 # fragment of a key, and the other tools require the whole key: only a session
-# that read every part to its end has it. Keys of earlier core versions stay
-# valid for KEY_HOURS, so a merged note does not lock out sessions mid-task.
-_keys: dict[str, float] = {}   # key -> when its core version was last served
+# that read every part to its end has it.
+#
+# The core is built once per refresh, not per call. Each build is a version (a
+# hash of its text). get_core names the version in every part and serves later
+# parts from it, so a note merged while a session reads the core does not mix two
+# versions into a key nobody issued. A replaced version stays readable, and its
+# key valid, for KEY_HOURS, so a merge does not lock out sessions mid-task.
+_cores: dict[str, dict] = {}   # version -> {"parts", "key", "retired": time replaced or None}
+_current = ""
 _lock = threading.Lock()
 
 
-def _fragments(parts: list[str]) -> list[str]:
-    version = hashlib.sha256("\0".join(parts).encode()).hexdigest()
-    return [hashlib.sha256(f"{version}:{i}".encode()).hexdigest()[:4] for i in range(len(parts))]
+def _fragments(version: str, n: int) -> list[str]:
+    return [hashlib.sha256(f"{version}:{i}".encode()).hexdigest()[:4] for i in range(n)]
+
+
+def rebuild() -> None:
+    """Build the core from the checkout; called after every refresh."""
+    global _current
+    parts = notes.core_parts()
+    version = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:8]
+    now = time.time()
+    with _lock:
+        if version != _current:
+            if _current:
+                _cores[_current]["retired"] = now
+            _cores[version] = {"parts": parts, "key": "-".join(_fragments(version, len(parts))),
+                               "retired": None}
+            _current = version
+        for v in [v for v, c in _cores.items() if c["retired"] and now - c["retired"] > KEY_HOURS * 3600]:
+            del _cores[v]
+
+
+def _core(version: str = "") -> tuple[str, dict | None]:
+    """The given version of the core (the current one when empty), or None once it has expired."""
+    with _lock:
+        v = version.strip().lower() or _current
+        return v, _cores.get(v)
 
 
 def _valid(key: str) -> bool:
-    now = time.time()
     with _lock:
-        _keys["-".join(_fragments(notes.core_parts()))] = now
-        for k in [k for k, t in _keys.items() if now - t > KEY_HOURS * 3600]:
-            del _keys[k]
-        return key.strip().lower() in _keys
+        return key.strip().lower() in {c["key"] for c in _cores.values()}
 
 
 def _require_core(core_key: str) -> None:
     if _valid(core_key):
         return
-    n = len(notes.core_parts())
+    n = len(_core()[1]["parts"])
     raise ToolError(
         f"{'Wrong' if core_key else 'Missing'} core_key. Read the team core first: get_core(part=1) "
         f"through get_core(part={n}), each to its last line, and join the {n} key fragments with '-' "
@@ -161,25 +188,29 @@ KEY = Field("", description="the core key: the key fragments from the last line 
 
 
 @mcp.tool()
-def get_core(ctx: Context, part: int = 1) -> str:
+def get_core(ctx: Context, part: int = 1,
+             version: str = Field("", description="the core version named by the previous part; empty for part 1")) -> str:
     """MANDATORY first call in every session: the team's core knowledge, in parts.
 
-    Call part=1, 2, ... through the last part, and read each to its end: its last line holds
-    one fragment of the core key that every other tool requires. Holds how to find things,
-    the working agreement (TEAM.md), general cross-system knowledge (core/), the system
-    briefings, and an index of every detailed note.
+    Call part=1, then 2, ... through the last part, passing the version each part names, and
+    read each to its end: its last line holds one fragment of the core key that every other
+    tool requires. Holds how to find things, the working agreement (TEAM.md), general
+    cross-system knowledge (core/), the system briefings, and an index of every detailed note.
     """
-    _log(ctx, "get_core", part=part)
-    parts = notes.core_parts()
+    _log(ctx, "get_core", part=part, version=version)
+    v, core = _core(version)
+    if core is None:
+        raise ToolError(f"Core version {version} has expired. Start again: get_core(part=1) with no version.")
+    parts = core["parts"]
     n = len(parts)
     if not 1 <= part <= n:
         raise ToolError(f"part must be 1-{n}")
-    frag = _fragments(parts)[part - 1]
-    nxt = (f"Now call get_core(part={part + 1})." if part < n else
+    frag = _fragments(v, n)[part - 1]
+    nxt = (f'Now call get_core(part={part + 1}, version="{v}").' if part < n else
            f"That was the last part. Your core key is the {n} fragments joined with '-' in part order "
            "(part 1's first); pass it as core_key to every other gnops-kb tool. Follow the working "
            "agreement for the rest of this session.")
-    return (f"[gnops-kb core, part {part} of {n}]\n\n{parts[part - 1]}\n\n"
+    return (f"[gnops-kb core version {v}, part {part} of {n}]\n\n{parts[part - 1]}\n\n"
             f"[End of part {part} of {n}. Core key fragment {part}: {frag}. {nxt}]")
 
 
