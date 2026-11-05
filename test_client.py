@@ -2,7 +2,8 @@
 
   python test_client.py http://HOST:8002/mcp [--submit]
 
-Checks that proposals without a header or with a fake password are rejected.
+Checks that proposals without a header, with a fake password or with personal data
+are rejected.
 With --submit it also makes a real test proposal: a branch (and a pull request
 when the server has a token) on the server's notes remote. Use it only against
 a test server; on the live server the branch lands in gnops-kb-notes.
@@ -77,6 +78,10 @@ async def main(url: str, submit: bool):
                 "title": "Must be rejected", "summary": "secret check", "author": "test", **k,
                 "changes": [{"path": "notes/kbtest/x.md",
                              "content": "---\ntitle: x\ndescription: x\n---\ndb password = hunter22\n"}]})
+            await call(s, "submit_notes", {
+                "title": "Must be rejected", "summary": "personal data check", "author": "test", **k,
+                "changes": [{"path": "notes/kbtest/z.md",
+                             "content": "---\ntitle: z\ndescription: z\n---\nmail jane.doe@example.org, 520-318-8000\n"}]})
             p = await s.get_prompt("distill", {})
             print("distill prompt:", p.messages[0].content.text[:120].replace("\n", " "), "...")
 

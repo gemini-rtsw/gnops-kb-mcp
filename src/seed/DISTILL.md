@@ -97,7 +97,8 @@ fit it, as long as the briefing's Notes index lists every note. Aim to cover:
 - **reference-<topic>.md**: tables, pinouts, register maps, version matrices,
   links to external docs and Confluence pages, glossary of the system's terms.
 - **people.md** (or a section in the briefing): who owns, maintains, reports
-  on and decides about the system, and what each person knows.
+  on and decides about the system, and which parts each person knows (work
+  roles only; see "What never goes in").
 - **faults/GNFR-xxxxx.md**: one per open or significant fault, for example:
   ```
   # GNFR-xxxxx: <title>
@@ -140,6 +141,23 @@ the system notes for worked examples, and use the same header as a note.
   reported by <person> / guess), the reasoning that leads from evidence to
   conclusion, and the exact command or tool call that re-checks it. Don't
   tag every line; plain reference facts (paths, file layout) don't need it.
-- Name the people involved and their roles.
 - Never include passwords, tokens or keys; say where they are stored.
-- Leave out chat and anything about people's moods.
+
+## What never goes in
+
+The notes are shared with the whole team and kept in git history for good.
+Save the technical knowledge, not the conversation.
+
+- People appear only by name and work role: what they own, maintain, reported,
+  decided or know about the system. Nothing else about them.
+- No chat: don't quote or summarise what the user said to Claude, how they
+  phrased it or how they felt. Write the decision or the fact instead ("use
+  gemini-rtsw-ci for all builds", not what was said on the way there).
+- Nothing personal: no contact details (email addresses, phone numbers, home
+  or personal accounts), no health, leave, travel or family matters, no
+  performance, HR or pay, no opinions about people or their work, no moods.
+- Quotes only from work records (Jira, logs, Confluence), with the source.
+- When unsure whether something is personal, leave it out.
+
+The server rejects email addresses and phone numbers; the rest is up to you
+and the reviewer.

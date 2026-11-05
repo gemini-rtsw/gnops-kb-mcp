@@ -296,8 +296,11 @@ async def submit_notes(ctx: Context, title: str, summary: str, author: str, chan
 
     Each change is the complete new content of one file. Read the current file
     first (get_briefing / get_note) and merge into it rather than replacing it.
-    author is the person whose session this came from (name or email).
-    No passwords, tokens or keys: they are rejected.
+    author is the name of the person whose session this came from.
+    Save technical knowledge, never the conversation or anything personal: people by name
+    and work role only; no chat quotes, contact details, health, leave, HR or opinions about
+    people (DISTILL.md, "What never goes in"). Passwords, tokens, keys, email addresses and
+    phone numbers are rejected.
     """
     _gate(ctx, core_key, "submit_notes", title=title)
     items = [c.model_dump() for c in changes]
