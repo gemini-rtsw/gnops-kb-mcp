@@ -64,6 +64,17 @@ SECRETS = [
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private key"),
 ]
 
+# Personal data, rejected the same way. Not an address: git@host (an SSH remote), and
+# user@host after ssh, scp, rsync, sftp or kinit, or in a URL. Phone numbers need - . or
+# (area code) separators, so space-separated data columns don't match.
+PERSONAL = [
+    (re.compile(r"(?<![\w.+-])(?!git@)[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"),
+     "an email address", "name the person and their role instead"),
+    (re.compile(r"(?<![\w.:/-])(\+\d{1,3}[ .-]?)?(\(\d{3}\) ?|\d{3}[.-])\d{3}[.-]\d{4}(?![\w.:/-])"),
+     "a phone number", "leave contact details out"),
+]
+NOT_ADDRESS = re.compile(r"\b(ssh|scp|rsync|sftp|kinit)\b|://")
+
 _lock = threading.Lock()   # one git operation at a time
 
 
@@ -286,7 +297,7 @@ def search(query: str, limit: int) -> list[dict]:
 
 
 def check(changes: list[dict]) -> list[str]:
-    """Problems that block a proposal: bad paths, oversize files, secrets."""
+    """Problems that block a proposal: bad paths, oversize files, secrets, personal data."""
     errs = []
     if not 1 <= len(changes) <= MAX_FILES:
         errs.append(f"pass 1-{MAX_FILES} files")
@@ -304,6 +315,10 @@ def check(changes: list[dict]) -> list[str]:
             for rx, what in SECRETS:
                 if rx.search(line):
                     errs.append(f"{path}:{n}: looks like a {what}; say where it is stored instead")
+            for rx, what, fix in PERSONAL:
+                m = rx.search(line)
+                if m and not (what == "an email address" and NOT_ADDRESS.search(line[:m.start()])):
+                    errs.append(f"{path}:{n}: looks like {what}; {fix} (DISTILL.md, \"What never goes in\")")
     return errs
 
 
