@@ -279,7 +279,9 @@ class Change(BaseModel):
 
 @mcp.tool()
 async def submit_notes(ctx: Context, title: str, summary: str, author: str, changes: list[Change],
-                       core_key: str = KEY) -> dict:
+                       core_key: str = KEY,
+                       proposal: str = Field("", description="empty for a new proposal; to add files "
+                                             "to one you already made, the branch it returned")) -> dict:
     """Propose new or updated notes. They become a pull request for review; nothing is published directly.
 
     Follow DISTILL.md (get_note("DISTILL.md")). Write for a new session that has to work
@@ -301,13 +303,21 @@ async def submit_notes(ctx: Context, title: str, summary: str, author: str, chan
     and work role only; no chat quotes, contact details, health, leave, HR or opinions about
     people (DISTILL.md, "What never goes in"). Passwords, tokens, keys, email addresses and
     phone numbers are rejected.
+
+    Large sets: each call takes at most 20 files of up to 64 KB; keep a call to roughly
+    100 KB so it fits in one reply. Submit the first batch, then send the rest in further
+    calls with proposal set to the branch the first call returned: they are added to the
+    same branch and pull request. Re-sending a path in a later batch replaces it there.
     """
-    _gate(ctx, core_key, "submit_notes", title=title)
+    _gate(ctx, core_key, "submit_notes", title=title, proposal=proposal)
     items = [c.model_dump() for c in changes]
     errs = notes.check(items)
     if errs:
         raise ToolError("not submitted:\n" + "\n".join(errs[:30]))
-    return await asyncio.to_thread(notes.submit, title, summary, author, items)
+    try:
+        return await asyncio.to_thread(notes.submit, title, summary, author, items, proposal)
+    except ValueError as e:
+        raise ToolError(f"not submitted: {e}")
 
 
 @mcp.prompt()

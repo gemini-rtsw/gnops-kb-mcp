@@ -326,12 +326,39 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "notes"
 
 
-def submit(title: str, summary: str, author: str, changes: list[dict]) -> dict:
-    """Commit changes on a new proposal branch off BRANCH; push and open a PR if there is a remote."""
-    branch = f"proposal/{time.strftime('%Y%m%d-%H%M%S')}-{_slug(title)}"
+PROPOSAL_OK = re.compile(r"^proposal/[0-9]{8}-[0-9]{6}-[a-z0-9-]+$")
+
+
+def submit(title: str, summary: str, author: str, changes: list[dict], proposal: str = "") -> dict:
+    """Commit changes on a new proposal branch off BRANCH; push and open a PR if there is a remote.
+
+    With proposal (a branch name an earlier call returned), add the commit on top of that
+    branch instead, so one pull request can grow over several calls.
+    """
     msg = f"{title}\n\n{summary}\n\nProposed-by: {author}\n"
     with _lock:
-        base = _git("rev-parse", f"origin/{BRANCH}" if REMOTE else BRANCH)
+        if proposal:
+            if not PROPOSAL_OK.match(proposal):
+                raise ValueError(f"proposal must be a branch name an earlier submit_notes returned "
+                                 f"(proposal/<date>-<time>-<slug>), not {proposal!r}")
+            branch = proposal
+            if REMOTE:
+                try:
+                    _git("fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+                except RuntimeError:
+                    raise ValueError(f"no proposal branch {branch} on the notes remote "
+                                     "(merged and deleted, or mistyped); start a new proposal")
+            try:
+                base = _git("rev-parse", "--verify", f"origin/{branch}" if REMOTE else branch)
+            except RuntimeError:
+                raise ValueError(f"no proposal branch {branch}; start a new proposal")
+            pr = _find_pr(branch)
+            if TOKEN and REMOTE and not pr:
+                raise ValueError(f"{branch} has no open pull request (merged or closed); "
+                                 "start a new proposal")
+        else:
+            branch = f"proposal/{time.strftime('%Y%m%d-%H%M%S')}-{_slug(title)}"
+            base = _git("rev-parse", f"origin/{BRANCH}" if REMOTE else BRANCH)
         with tempfile.NamedTemporaryFile(dir="/tmp") as idx:
             env = {"GIT_INDEX_FILE": idx.name}
             _git("read-tree", base, env=env)
@@ -349,7 +376,23 @@ def submit(title: str, summary: str, author: str, changes: list[dict]) -> dict:
                     "review": f"on the server: {git} diff {BRANCH}...{branch}",
                     "merge": f"{git} -c user.name=review -c user.email=review@localhost merge {branch}"}
         _git("push", "-q", "origin", f"{branch}:{branch}")
+        if proposal:
+            _git("update-ref", f"refs/remotes/origin/{branch}", commit)
+            return {"status": "added", "branch": branch, "files": len(changes),
+                    "pull_request": pr or f"open one for branch {branch}"}
     return {"status": "proposed", "branch": branch, "pull_request": _open_pr(branch, title, msg)}
+
+
+def _find_pr(branch: str) -> str:
+    """URL of the open pull request for a proposal branch, or "" if there is none or no token."""
+    m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(\.git)?$", REMOTE)
+    if not (TOKEN and m):
+        return ""
+    r = httpx.get(f"https://api.github.com/repos/{m[1]}/{m[2]}/pulls", timeout=30,
+                  params={"head": f"{m[1]}:{branch}", "state": "open"},
+                  headers={"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"})
+    r.raise_for_status()
+    return r.json()[0]["html_url"] if r.json() else ""
 
 
 def _open_pr(branch: str, title: str, body: str) -> str:
