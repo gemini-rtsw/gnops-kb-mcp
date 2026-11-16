@@ -29,7 +29,21 @@ the folder's system (for the optional hook below), `GET /usage` (recent tool
 calls: core parts read, searches, notes opened, refused calls; every call is also appended to
 `$KB_DATA/usage.jsonl`), `GET /health`.
 
-## Install
+## Install on your own machine (Mac or Linux, Docker)
+
+One line; asks for the notes token, starts the container on localhost:8002 and
+adds it to Claude Code. Re-run it to upgrade (settings are kept in ~/.gnops-kb):
+
+```
+curl -fsSL https://raw.githubusercontent.com/gemini-rtsw/gnops-kb-mcp/main/install.sh | bash
+```
+
+Before running it: Docker running, `docker login ghcr.io` with a classic token
+that has `read:packages`, and a fine-grained notes token (owner gemini-rtsw,
+repository gnops-kb-notes only, Contents and Pull requests read/write).
+Details and overrides: the comments at the top of install.sh.
+
+## Install on a shared server (RPM)
 
 ```
 sudo dnf install gnops-kb-mcp
