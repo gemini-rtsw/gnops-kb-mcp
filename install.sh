@@ -28,7 +28,7 @@ say() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 # 1. Docker
-command -v docker >/dev/null || die "Docker is not installed (Mac: Docker Desktop)."
+command -v docker >/dev/null || die "Docker is not installed (Mac: Docker Desktop, or Colima)."
 docker info >/dev/null 2>&1 || die "Docker is not running, or this user can't use it. Start Docker and re-run."
 
 # 2. Image (private on GHCR)
@@ -48,9 +48,25 @@ token=""
 [ -n "${GITHUB_TOKEN:-}" ] && token="$GITHUB_TOKEN"
 if [ -z "$token" ]; then
     [ -r /dev/tty ] || die "No terminal to ask for the token; set GITHUB_TOKEN and re-run."
-    echo "Notes token: fine-grained, owner gemini-rtsw, repository gnops-kb-notes only,"
-    echo "permissions Contents and Pull requests read/write."
-    printf 'Paste it (not shown): '
+    cat <<'EOF'
+
+The server needs a GitHub token to clone the private notes repo and to open
+proposal PRs from submit_notes. Create a fine-grained token at:
+
+    https://github.com/settings/personal-access-tokens/new
+
+  Resource owner:       gemini-rtsw
+  Repository access:    Only select repositories -> gnops-kb-notes
+  Permissions -> Repository permissions:
+      Contents:         Read and write
+      Pull requests:    Read and write
+  (Metadata: Read is added automatically; nothing else is needed.
+   Choosing the repo alone is not enough: without Contents the clone fails.)
+
+If the org asks for approval, wait until it is approved before pasting.
+
+EOF
+    printf 'Paste the token (input is hidden), then press Enter: '
     read -rs token < /dev/tty
     echo
     [ -n "$token" ] || die "No token given."
