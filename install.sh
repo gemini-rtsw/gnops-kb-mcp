@@ -2,6 +2,7 @@
 # gnops-kb one-line installer for a Mac or Linux machine with Docker.
 #
 #   curl -fsSL https://raw.githubusercontent.com/gemini-rtsw/gnops-kb-mcp/main/install.sh | bash
+#   or, from a clone: ./install.sh   (it git-pulls itself first)
 #
 # Writes the settings to ~/.gnops-kb, starts the gnops-kb-mcp container (restarts with
 # Docker), and registers it with Claude Code. Re-run it to upgrade: settings and the
@@ -27,13 +28,25 @@ URL="http://localhost:$PORT/mcp"
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# 0. Run from a clone: update it first, then re-run the new script (once).
+#    Piped from curl, BASH_SOURCE is not a file and this is skipped (main is already current).
+SRC="${BASH_SOURCE[0]:-}"
+if [ -z "${GNOPS_KB_UPDATED:-}" ] && [ -f "$SRC" ]; then
+    REPO="$(cd "$(dirname "$SRC")" && pwd)"
+    if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        say "Updating $REPO (git pull)"
+        git -C "$REPO" pull --ff-only || die "git pull failed in $REPO; fix it (local changes?) and re-run."
+        GNOPS_KB_UPDATED=1 exec bash "$REPO/install.sh" "$@"
+    fi
+fi
+
 # 1. Docker
 command -v docker >/dev/null || die "Docker is not installed (Mac: Docker Desktop, or Colima)."
 docker info >/dev/null 2>&1 || die "Docker is not running, or this user can't use it. Start Docker and re-run."
 
 # 2. Image (private on GHCR)
 say "Pulling $IMAGE"
-if ! docker pull --platform linux/amd64 "$IMAGE" >/dev/null; then
+if ! docker pull --platform linux/amd64 "$IMAGE"; then
     die "Could not pull $IMAGE. Log in to GHCR with a classic token that has read:packages:
        docker login ghcr.io
    then re-run this installer."
